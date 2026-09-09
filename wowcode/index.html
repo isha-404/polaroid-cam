@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OPTIC—01 · Digital Field Camera</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="brand">
+    <span class="brand-mark">OPTIC—01</span>
+    <span class="brand-sub">DIGITAL FIELD CAMERA</span>
+  </div>
+  <div class="status" id="statusChip"><span class="dot"></span><span id="statusText">OFFLINE</span></div>
+</header>
+
+<main>
+  <section class="stage">
+    <div class="vf-tools">
+      <span class="tools-note">VF-900 · LOCAL MONITOR</span>
+      <div class="tools">
+        <button class="chip on" id="tglGrid">GRID<b>ON</b></button>
+        <button class="chip on" id="tglMirror">MIRROR<b>ON</b></button>
+      </div>
+    </div>
+
+    <div class="vf-wrap">
+      <div class="viewfinder is-off mirrored" id="viewfinder">
+        <video id="video" autoplay playsinline muted></video>
+        <div class="fx scan"></div>
+        <div class="fx grid" id="gridFx"></div>
+
+        <div class="hud">
+          <span class="rec-dot"></span>
+          <div class="hud-tl"><span id="modeLabel">STBY</span></div>
+          <div class="hud-tr" id="timecode">TC 00:00:00:00</div>
+          <div class="hud-bl" id="metaLabel">NO SIGNAL</div>
+          <div class="hud-br" id="clock">—</div>
+          <span class="corner tl"></span><span class="corner tr"></span>
+          <span class="corner bl"></span><span class="corner br"></span>
+          <span class="cross"></span>
+        </div>
+
+        <div class="flash" id="flash"></div>
+
+        <div class="offline">
+          <button class="power-btn" id="btnPower" title="Power on (P)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v8"/><path d="M6.2 6.3a8 8 0 1 0 11.6 0"/></svg>
+          </button>
+          <div class="off-title" id="offTitle">CAMERA OFF</div>
+          <div class="off-sub" id="offSub">PRESS POWER TO REQUEST CAMERA ACCESS</div>
+          <div class="off-err" id="offErr"></div>
+        </div>
+      </div>
+
+      <div class="polaroid" id="polaroid">
+        <img id="polImg" alt="Newest exposure">
+        <span class="pol-cap">OPTIC-01</span>
+      </div>
+    </div>
+
+    <div class="controls">
+      <div class="ctrl">
+        <button class="shutter big" id="btnCapture" disabled aria-label="Capture photo"><span class="core"></span></button>
+        <span class="ctrl-label">CAPTURE</span><span class="ctrl-key">SPC</span>
+      </div>
+      <div class="ctrl">
+        <button class="shutter" id="btnRecord" disabled aria-label="Record video"><span class="core red"></span></button>
+        <span class="ctrl-label">RECORD</span><span class="ctrl-key">R</span>
+      </div>
+      <div class="ctrl">
+        <button class="shutter" id="btnStop" disabled aria-label="Stop"><span class="core sq"></span></button>
+        <span class="ctrl-label">STOP</span><span class="ctrl-key">S</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="roll">
+    <div class="roll-head">
+      <span class="roll-title">FILM ROLL</span>
+      <span class="roll-line"></span>
+      <span class="roll-count" id="rollCount">EXPOSURES 00</span>
+    </div>
+    <div class="roll-strip" id="rollStrip">
+      <div class="roll-empty" id="rollEmpty">NO EXPOSURES YET<br>HIT CAPTURE OR RECORD TO FILL THE ROLL</div>
+    </div>
+  </section>
+</main>
+
+<footer>SIGNAL PROCESSED LOCALLY — NOTHING LEAVES THIS DEVICE</footer>
+
+<div class="lightbox" id="lightbox">
+  <div class="lb-inner">
+    <div class="lb-media" id="lbMedia"></div>
+    <div class="lb-bar">
+      <span id="lbCaption"></span>
+      <div class="lb-actions">
+        <button class="lb-btn" id="lbDl"></button>
+        <button class="lb-btn danger" id="lbDel"></button>
+        <button class="lb-btn" id="lbClose"></button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+<canvas id="work" hidden></canvas>
+
+<script src = "script.js"></script>
+</body>
+</html>
