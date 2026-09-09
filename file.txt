@@ -1,0 +1,277 @@
+Absolutely! Let's walk through the whole thing like a guided tour. I'll go concept-by-concept rather than line-by-line, so you build a mental model of how the pieces fit together.
+
+## 0. The Big Picture
+
+Everything in this app is one data pipeline:
+
+```
+camera ──► MediaStream ──► <video>  (live preview)
+                │
+                ├──► canvas snapshot ──► JPEG ──► polaroid print ──► download
+                │
+                └──► MediaRecorder ──► chunks ──► Blob ──► object URL ──► clip player/download
+```
+
+The camera gives us one live stream. **Photos** are frozen frames painted onto a canvas and exported as images. **Clips** are the same stream fed into a browser video encoder. Everything else (HUD, film roll, lightbox) is just UI wrapped around those two paths.
+
+---
+
+## 1. HTML Structure
+
+The page is basically stacked layers:
+
+```html
+<div class="viewfinder">
+  <video>              <!-- layer 1: the live camera -->
+  <div class="fx">     <!-- layer 2: scanlines + grid overlay -->
+  <div class="hud">    <!-- layer 3: REC dot, timecode, corners -->
+  <div class="flash">  <!-- layer 4: white flash on capture -->
+  <div class="offline"><!-- layer 5: "power off" screen -->
+</div>
+```
+
+All layers sit on top of each other with `position:absolute`, and CSS classes decide which are visible. There's also one sneaky element at the bottom:
+
+```html
+<canvas id="work" hidden></canvas>
+```
+
+This is an **off-screen workbench**. It's never shown — it exists only so we have somewhere to paint video frames. You'll see why in a second.
+
+---
+
+## 2. Key CSS Tricks
+
+**Design tokens** — all colors/fonts live in `:root` as CSS variables (`--paper`, `--red`...). Change `--paper` once and every polaroid updates.
+
+**The film grain over the whole page** is a `body::after` pseudo-element with an inline SVG noise texture encoded as a data URI:
+
+```css
+background-image:url("data:image/svg+xml,...feTurbulence...");
+```
+
+`feTurbulence` is an SVG filter that generates random noise — so we get grain with zero image files.
+
+**The blinking REC dot** uses `steps(2, start)`:
+
+```css
+animation:blink 1s steps(2,start) infinite;
+```
+
+`steps()` makes the animation *jump* between states instead of fading — that's what gives the harsh on/off camcorder blink.
+
+**Power off** is just class juggling: `.viewfinder.is-off` fades out the HUD and FX (via `opacity:0`), while `.offline` (a full dark overlay, normally invisible) becomes the visible layer.
+
+**The polaroid eject** is a CSS transition with a springy easing curve:
+
+```css
+transition:transform .55s cubic-bezier(.2,.85,.3,1.12);
+```
+
+That `1.12` overshoots past 100% and settles back — the little "pop" when the print slides out.
+
+---
+
+## 3. Powering On — `getUserMedia()`
+
+```js
+stream = await navigator.mediaDevices.getUserMedia({video:{...}, audio:true});
+video.srcObject = stream;
+```
+
+- `getUserMedia` asks the browser for camera/mic access and returns a Promise with a `MediaStream`.
+- We attach the stream to the `<video>` element — that's the whole preview.
+- **The fallback logic**: we first try `video + audio` (we need audio for recording). If that's denied, we retry with `video` only — so a blocked mic doesn't kill the whole camera.
+- **Error mapping**: browsers throw named errors — `NotAllowedError` (permission denied), `NotFoundError` (no camera), `NotReadableError` (camera busy). We translate them into friendly HUD messages.
+- **Powering off** is important: `stream.getTracks().forEach(t => t.stop())` actually releases the hardware (the camera light turns off).
+
+⚠️ Browsers only allow camera access on **HTTPS or localhost** — that's a security rule, not a bug.
+
+---
+
+## 4. The State Machine
+
+The app is always in exactly one of three states: `off` → `live` → `rec`. One function owns all of it:
+
+```js
+function setState(s){
+  // toggles CSS classes, updates the status chip,
+  // enables/disables the three buttons
+}
+```
+
+Every button press just calls `setState('live')` or whatever. **Why?** Because otherwise you end up with spaghetti — "if recording, disable capture... unless busy... but enable stop..." With a single `setState`, the rules about which buttons work live in *one* place. This is a genuinely useful pattern for any interactive app.
+
+---
+
+## 5. Capture — the Canvas Snapshot
+
+This is the heart of the photo feature. You **cannot download a `<video>` element directly** — it's just a live playback surface. So we steal a frame:
+
+```js
+const ctx = work.getContext('2d');
+if(mirror){ ctx.translate(w,0); ctx.scale(-1,1) }  // horizontal flip
+ctx.drawImage(video, 0, 0, w, h);                  // paint the current frame
+const src = work.toDataURL('image/jpeg', 0.92);    // export as JPEG
+```
+
+- `drawImage(video, ...)` copies whatever pixel is on screen *right now* onto the canvas.
+- The mirror trick: `translate` + `scale(-1,1)` flips the canvas horizontally, so the saved photo matches what you saw in the mirrored preview.
+- `toDataURL('image/jpeg', 0.92)` converts the canvas pixels into a base64 text string that works anywhere an image URL works — `<img src>`, downloads, etc.
+
+**The flash restart trick**:
+
+```js
+flashEl.classList.remove('on');
+void flashEl.offsetWidth;   // ← forces the browser to re-layout
+flashEl.classList.add('on');
+```
+
+Browsers won't replay a CSS animation if the class is already there. Reading `offsetWidth` forces a synchronous reflow, which "resets" the animation so re-adding the class plays it again. It looks like a weird hack because it is one — but it's *the* standard hack.
+
+**The double `requestAnimationFrame`** before ejecting the polaroid does something similar: it waits two frames so the browser fully paints the "hidden" state *before* adding `.show`, guaranteeing the transition runs.
+
+**The `busy` flag** prevents capturing again while the eject animation is mid-flight — otherwise you'd get two polaroids fighting over the same slot.
+
+---
+
+## 6. The Polaroid Compositor
+
+This is the newest part, so let's slow down. `composePolaroid(it)` builds the *downloaded* image — paper, grain, caption, everything baked into the pixels:
+
+**Step 1 — canvas geometry** (all sizes scale with the photo so it works at any resolution):
+
+```js
+const pad  = Math.round(w * 0.052);          // paper border = 5.2% of width
+const capH = Math.max(54, h * 0.16);         // caption strip at the bottom
+const cw = w + pad*2;                        // total paper width
+const ch = h + pad + capH;                   // total paper height
+```
+
+**Step 2 — paint the paper**: fill with `#f2efe6`, then stamp a tiled noise pattern at 5% opacity:
+
+```js
+x.globalAlpha = .05;
+x.fillStyle = x.createPattern(grainCv, 'repeat');  // grainCv = tiny 90×90 noise canvas
+```
+
+That noise canvas is generated *once* at startup with `createImageData` — random pixels, reused forever.
+
+**Step 3 — paste the photo + hairline**: `drawImage`, then `strokeRect` at `.5` offsets (canvas lines are drawn *between* pixels, so the half-pixel nudge gives a crisp 1px line).
+
+**Step 4 — print the caption** with `fillText`, left-aligned on one side, right-aligned on the other:
+
+```js
+x.fillText('OPTIC—01', pad, pad + h + capH * .38);
+x.fillText(`NO.${p2v3(it.n)} · ${it.clock}`, cw - pad, pad + h + capH * .52);
+```
+
+**Step 5 — cache it**:
+
+```js
+if(it.pol) return Promise.resolve(it.pol);  // already printed? reuse!
+...
+it.pol = c.toDataURL('image/jpeg', 0.92);
+```
+
+Compositing takes a moment, so we do it **once per photo** and store the result on the shot object. Open it ten times, download it ten times — instant.
+
+Since the work happens at the camera's full resolution (1280×720 → ~1414×902 paper), the saved file stays sharp.
+
+---
+
+## 7. Recording — `MediaRecorder`
+
+Same stream, different consumer:
+
+```js
+recorder = new MediaRecorder(stream, {mimeType: mime});
+recorder.ondataavailable = e => chunks.push(e.data);  // encoder hands us pieces
+recorder.start();
+```
+
+- **`pickMime()`**: browsers encode differently — Chrome likes WebM/VP9, Safari prefers MP4. We test a list from best to worst with `MediaRecorder.isTypeSupported()` and take the first winner.
+- **chunks → Blob**: recording arrives in pieces; on stop we glue them: `new Blob(chunks, {type: mime})`.
+- **`URL.createObjectURL(blob)`** creates a temporary local URL pointing at that in-memory blob. That's what lets the `<video>` tag play it and what the download link points to.
+
+**The famous `Infinity` bug** 🐛: WebM files made by `MediaRecorder` don't write a duration header, so `video.duration` returns `Infinity`. Our `getVideoPoster()` works around it with a bizarre but well-known trick:
+
+```js
+v.currentTime = 1e7;   // demand a seek past the end of time
+// browser panics, scans the file, fires 'timeupdate' with the real duration
+// NOW we can safely seek to 0.2s and grab a frame
+```
+
+We also track duration ourselves with `performance.now()` rather than trusting the file — that's why the clip badges always show the right length.
+
+Note the data-format difference worth remembering:
+
+| | Photos | Clips |
+|---|---|---|
+| Format | **data URL** (base64 text, lives in the page) | **object URL** (pointer to a Blob in memory) |
+| Cleanup | garbage collected automatically | we must call `URL.revokeObjectURL()` on delete |
+
+---
+
+## 8. The Film Roll — Data Model
+
+Each shot is an object in a `Map`:
+
+```js
+{ kind:'photo', src:'data:image/jpeg...', n:1, clock:'14:23:07',
+  date:'2024.06.14', name:'OPTIC01_....jpg', pol:null, el:cardElement }
+```
+
+- The **Map** gives instant lookup by id — needed for "download this one" / "delete this one" without scanning arrays.
+- Each card's DOM is built from a template string, then we wire three click handlers (open / download / delete) directly to it.
+- **Deleting a clip** revokes its object URL — a small memory-hygiene step that matters if someone records a lot.
+- Deleting the shot that's currently open in the lightbox also closes the lightbox.
+
+---
+
+## 9. The Sound Engine
+
+Zero audio files — everything is synthesized with the **Web Audio API**:
+
+**Beeps** (record start/stop) are a sine oscillator with a volume envelope:
+
+```js
+g.gain.setValueAtTime(vol, t);
+g.gain.exponentialRampToValueAtTime(.0001, t + dur);  // fade to silence
+```
+
+**The shutter "ka-chak"** is fancier: a buffer of white noise with a decay applied sample-by-sample, pushed through a `BiquadFilter` (bandpass). Two bursts at different frequencies, 70ms apart:
+
+```js
+click(t, 3200); click(t + .07, 1800);
+```
+
+Two mechanical-sounding clacks for the price of zero MP3s. Also note `AudioContext` can't make sound until the user has interacted with the page — since every sound happens right after a click/keypress, we're always safe.
+
+---
+
+## 10. Small Details Worth Stealing
+
+- **Toasts** — create a div, setTimeout to add a `.bye` class (exit animation), remove after. No libraries.
+- **Keyboard shortcuts** — `Space`/`R`/`S`/`P`, but ignored while the lightbox is open; `Esc` closes it. Small guard clauses like this are what make keyboard support feel polished instead of annoying.
+- **Stale-async guard** in the lightbox:
+
+```js
+composePolaroid(it).then(u => { if(lbId===id && ...) imgEl.src = u; });
+```
+
+Compositing is async — if you closed the lightbox (or opened a different shot) before it finished, this check stops the old image from being slapped into the wrong view. Any time you have async work + changing UI, ask "what if the user moved on?"
+
+---
+
+## Ideas to Try Yourself
+
+The best way to cement this: modify it. Some fun ones, roughly in difficulty order:
+
+1. **Change the print** — paper color, caption font, the `NO.` format in `composePolaroid`.
+2. **Add a filter toggle** — e.g. a "B&W" chip; in `capture()`, do `ctx.filter = 'grayscale(1)'` before `drawImage`. One line!
+3. **Sepia flash effect on the HUD** — you already know the class-restart trick.
+4. **"Print all" button** — loop through `shots`, call `composePolaroid` on each, trigger downloads with small delays.
+5. **Photo timer** — a 3-2-1 countdown before capture (a `setInterval` that updates the HUD, then calls `capture()`).
+
+Happy to deep-dive into any single section — the compositor and MediaRecorder are the two with the most interesting machinery under the hood. 📸
