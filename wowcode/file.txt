@@ -1,5 +1,3 @@
-Absolutely! Let's walk through the whole thing like a guided tour. I'll go concept-by-concept rather than line-by-line, so you build a mental model of how the pieces fit together.
-
 ## 0. The Big Picture
 
 Everything in this app is one data pipeline:
